@@ -15,4 +15,4 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from ._auth import OAuth2Scope  # noqa: F401
-from ._client import OAuth1Client, OAuth1UploadClient, OAuth2Client  # noqa: F401
+from ._client import OAuth1Client, OAuth2Client  # noqa: F401

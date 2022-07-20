@@ -14,6 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from abc import ABC, abstractmethod
 from base64 import b64encode
 from datetime import datetime, timedelta
 from hashlib import sha1
@@ -29,7 +30,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from webbrowser import open
 from wsgiref.simple_server import make_server
 
-from requests import Session
+from requests import Response, Session
 from requests_toolbelt import MultipartEncoder
 
 from ._auth import OAuth1ExchangeWSGIApp, OAuth2PKCECodeExchangeWSGIApp, OAuth2Scope
@@ -43,8 +44,135 @@ def _percent_encode(src: str):
     return quote(src, safe="")
 
 
-class OAuth1Client:
-    api_url = "https://api.twitter.com"
+class AbstractClient(ABC):
+    api_base_url = "https://api.twitter.com"
+
+    def __init__(self, session: Optional[Session] = None):
+        super().__init__()
+
+        if session is None:
+            session = Session()
+
+        self.__session = session
+        self.__session.headers["User-Agent"] = f"pyeXTC/{__version__}"
+
+    def _delete(self, url: str, params: Optional[Dict[str, str]] = None,
+                headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+                json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        return self._request("DELETE", url, params=params, headers=headers, data=data, json=json,
+                             files=files)
+
+    def _get(self, url: str, params: Optional[Dict[str, str]] = None,
+             headers: Optional[Dict[str, str]] = None):
+        return self._request("GET", url, params=params, headers=headers)
+
+    def _patch(self, url: str, params: Optional[Dict[str, str]] = None,
+               headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+               json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        return self._request("PATCH", url, params=params, headers=headers, data=data, json=json,
+                             files=files)
+
+    def _post(self, url: str, params: Optional[Dict[str, str]] = None,
+              headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+              json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        return self._request("POST", url, params=params, headers=headers, data=data, json=json,
+                             files=files)
+
+    def _put(self, url: str, params: Optional[Dict[str, str]] = None,
+             headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+             json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        return self._request("PUT", url, params=params, headers=headers, data=data, json=json,
+                             files=files)
+
+    @abstractmethod
+    def _request(self, method: str, url: str, params: Optional[Dict[str, str]] = None,
+                 headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+                 json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        return self.__session.request(method, url, params=params, headers=headers, data=data,
+                                      files=files, json=json)
+
+    @property
+    def _session(self):
+        return self.__session
+
+    def create_new_tweet(self, direct_message_deep_link: Optional[str] = None,
+                         for_super_followers_only: Optional[bool] = None,
+                         geo_place_id: Optional[str] = None, media_ids: Optional[List[str]] = None,
+                         media_tagged_user_ids: Optional[List[str]] = None,
+                         poll_options: Optional[List[str]] = None,
+                         poll_duration_minutes: Optional[int] = None,
+                         quote_tweet_id: Optional[str] = None,
+                         reply_exclude_reply_user_ids: Optional[List[str]] = None,
+                         reply_in_reply_to_tweet_id: Optional[str] = None,
+                         reply_settings: Optional[str] = None,
+                         text: Optional[str] = None):
+        if media_tagged_user_ids is not None:
+            assert media_ids is not None
+
+        if poll_duration_minutes is not None:
+            assert poll_options is not None
+
+        if reply_exclude_reply_user_ids is not None:
+            assert reply_in_reply_to_tweet_id is not None
+
+        assert media_ids is not None or text is not None
+
+        tweet_data = {}
+
+        if direct_message_deep_link is not None:
+            tweet_data |= {"direct_message_deep_link": direct_message_deep_link}
+
+        if for_super_followers_only is not None:
+            tweet_data |= {"for_super_followers_only": for_super_followers_only}
+
+        if geo_place_id is not None:
+            tweet_data |= {"geo": {"place_id": geo_place_id}}
+
+        if media_ids is not None:
+            media_data = {"media_ids": media_ids}
+
+            if media_tagged_user_ids:
+                media_data |= {"tagged_user_ids": media_tagged_user_ids}
+
+            tweet_data |= {"media": media_data}
+
+        if poll_options is not None:
+            tweet_data |= {
+                "poll": {
+                    "options": poll_options,
+                    "duration_minutes": poll_duration_minutes,
+                },
+            }
+
+        if quote_tweet_id is not None:
+            tweet_data |= {"quote_tweet_id": quote_tweet_id}
+
+        if reply_in_reply_to_tweet_id is not None:
+            reply_data = {"in_reply_to_tweet_id": reply_in_reply_to_tweet_id}
+
+            if reply_exclude_reply_user_ids:
+                reply_data = {"exclude_reply_user_ids": reply_exclude_reply_user_ids}
+
+            tweet_data |= {"reply": reply_data}
+
+        if reply_settings is not None:
+            tweet_data |= {"reply_settings": reply_settings}
+
+        if text is not None:
+            tweet_data |= {"text": text}
+
+        return self._post(f"{self.api_base_url}/2/tweets", json=tweet_data)
+
+    def delete_tweet(self, tweet_id: str):
+        return self._delete(f"{self.api_base_url}/2/tweets/{tweet_id}")
+
+    @abstractmethod
+    def revoke(self) -> Response:
+        pass
+
+
+class OAuth1Client(AbstractClient):
+    upload_url = "https://upload.twitter.com/1.1/media/upload.json"
 
     @staticmethod
     def __authorize_request(method: str, url: str, oauth_consumer_key: str,
@@ -138,16 +266,11 @@ class OAuth1Client:
 
     def __init__(self, oauth_consumer_key: str, oauth_consumer_secret: str, oauth_token: str,
                  oauth_token_secret: str, session: Optional[Session] = None):
+        super().__init__(session=session)
         self.__oauth_consumer_key = oauth_consumer_key
         self.__oauth_consumer_secret = oauth_consumer_secret
         self.__oauth_token = oauth_token
         self.__oauth_token_secret = oauth_token_secret
-
-        if session is None:
-            session = Session()
-
-        self.__session = session
-        self.__session.headers["User-Agent"] = f"pyeXTC/{__version__}"
 
     @classmethod
     def __exchange_verifier(cls, oauth_consumer_key: str, oauth_consumer_secret: str,
@@ -157,7 +280,7 @@ class OAuth1Client:
             session = Session()
 
         res = session.post(
-            f"{OAuth1Client.api_url}/oauth/access_token",
+            f"{cls.api_base_url}/oauth/access_token",
             data={
                 "oauth_consumer_key": oauth_consumer_key,
                 "oauth_token": oauth_token,
@@ -182,6 +305,104 @@ class OAuth1Client:
 
         return cls(oauth_consumer_key, oauth_consumer_secret, oauth_token, oauth_token_secret)
 
+    def __chunked_upload_append(self, media_id: str, media_filename: str, media_bytes: bytes,
+                                segment_index: int):
+        mp_data = MultipartEncoder(
+            fields={
+                "command": "APPEND",
+                "media_id": f"{media_id}",
+                "segment_index": f"{segment_index}",
+                "media": (media_filename, media_bytes, "application/octet-stream"),
+            },
+        )
+        return self._post(self.upload_url, data=mp_data,
+                          headers={"Content-Type": mp_data.content_type})
+
+    def __chunked_upload_finalize(self, media_id: str):
+        return self._post(self.upload_url,
+                          data={"command": "FINALIZE", "media_id": media_id})
+
+    def __chunked_upload_init(
+        self,
+        media_mimetype: str,
+        media_size: int,
+        media_category: Optional[
+            Literal[
+                "amplify_video",
+                "tweet_gif",
+                "tweet_image",
+                "tweet_video",
+            ]
+        ] = None,
+        additional_owners: Optional[List[str]] = None,
+    ):
+        data = {
+            "command": "INIT",
+            "total_bytes": media_size,
+            "media_type": media_mimetype,
+        }
+
+        if media_category:
+            data |= {"media_category": media_category}
+
+        if additional_owners:
+            data |= {"additional_owners": additional_owners}
+
+        return self._post(self.upload_url, data=data)
+
+    def __simple_upload(
+        self,
+        media_bytes: bytes,
+        media_category: Optional[
+            Literal[
+                "amplify_video",
+                "tweet_gif",
+                "tweet_image",
+                "tweet_video",
+            ]
+        ] = None,
+        additional_owners: Optional[List[str]] = None,
+    ):
+        fields = {"media": media_bytes}
+        if media_category is not None:
+            fields |= {"media_category": media_category}
+
+        if additional_owners is not None:
+            fields |= {"additional_owners": additional_owners}
+
+        mp_data = MultipartEncoder(fields=fields)
+
+        return self._post(self.upload_url, data=mp_data,
+                          headers={"Content-Type": mp_data.content_type})
+
+    def _request(self, method: str, url: str, params: Optional[Dict[str, str]] = None,
+                 headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+                 json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        if headers is not None and isinstance(headers, dict):
+            if "Authorization" not in headers:
+                authorization = OAuth1Client.__authorize_request(
+                    method, url, self.__oauth_consumer_key, self.__oauth_consumer_secret,
+                    datetime.utcnow(), oauth_token=self.__oauth_token,
+                    oauth_token_secret=self.__oauth_token_secret, params=params, json=json,
+                    data=data)
+
+                headers |= {"Authorization": authorization}
+
+        else:
+            authorization = OAuth1Client.__authorize_request(
+                method, url, self.__oauth_consumer_key, self.__oauth_consumer_secret,
+                datetime.utcnow(), oauth_token=self.__oauth_token,
+                oauth_token_secret=self.__oauth_token_secret, params=params, json=json,
+                data=data)
+
+            headers = {"Authorization": authorization}
+
+        return super()._request(method, url, params=params, headers=headers, data=data, json=json,
+                                files=files)
+
+    def get_media_status(self, media_id: str):
+        return self._get(self.upload_url, params={"command": "STATUS", "media_id": media_id})
+
     @classmethod
     def new_user_authorization(cls, oauth_callback: str, oauth_consumer_key: str,
                                oauth_consumer_secret: str,
@@ -192,7 +413,7 @@ class OAuth1Client:
 
         params = {"oauth_callback": oauth_callback, "x_auth_access_type": x_auth_access_type}
         timestamp = datetime.utcnow()
-        request_token_url = f"{OAuth1Client.api_url}/oauth/request_token"
+        request_token_url = f"{cls.api_base_url}/oauth/request_token"
         authorization = OAuth1Client.__authorize_request("POST", request_token_url,
                                                          oauth_consumer_key, oauth_consumer_secret,
                                                          timestamp, params=params)
@@ -223,103 +444,8 @@ class OAuth1Client:
         return cls.__exchange_verifier(oauth_consumer_key, oauth_consumer_secret, oauth_token,
                                        wsgi_app.oauth_verifier, session=session)
 
-    def _request(self, method: str, url: str, params: Optional[Dict[str, str]] = None,
-                 headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
-                 json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
-        authorization = OAuth1Client.__authorize_request(
-            method, url, self.__oauth_consumer_key, self.__oauth_consumer_secret,
-            datetime.utcnow(), oauth_token=self.__oauth_token,
-            oauth_token_secret=self.__oauth_token_secret, params=params, json=json, data=data)
-
-        if headers is not None and isinstance(headers, dict):
-            headers |= {"Authorization": authorization}
-
-        else:
-            headers = {"Authorization": authorization}
-
-        return self.__session.request(method, url, params=params, headers=headers, data=data,
-                                      files=files, json=json)
-
     def revoke(self):
-        return self._request("POST", f"{OAuth1Client.api_url}/1.1/oauth/invalidate_token.json")
-
-
-class OAuth1UploadClient(OAuth1Client):
-    upload_url = "https://upload.twitter.com/1.1/media/upload.json"
-
-    def __chunked_upload_append(self, media_id: str, media_filename: str, media_bytes: bytes,
-                                segment_index: int):
-        mp_data = MultipartEncoder(
-            fields={
-                "command": "APPEND",
-                "media_id": f"{media_id}",
-                "segment_index": f"{segment_index}",
-                "media": (media_filename, media_bytes, "application/octet-stream"),
-            },
-        )
-        return self._request("POST", OAuth1UploadClient.upload_url, data=mp_data,
-                             headers={"Content-Type": mp_data.content_type})
-
-    def __chunked_upload_finalize(self, media_id: str):
-        return self._request("POST", OAuth1UploadClient.upload_url,
-                             data={"command": "FINALIZE", "media_id": media_id})
-
-    def __chunked_upload_init(
-        self,
-        media_mimetype: str,
-        media_size: int,
-        media_category: Optional[
-            Literal[
-                "amplify_video",
-                "tweet_gif",
-                "tweet_image",
-                "tweet_video",
-            ]
-        ] = None,
-        additional_owners: Optional[List[str]] = None,
-    ):
-        data = {
-            "command": "INIT",
-            "total_bytes": media_size,
-            "media_type": media_mimetype,
-        }
-
-        if media_category:
-            data |= {"media_category": media_category}
-
-        if additional_owners:
-            data |= {"additional_owners": additional_owners}
-
-        return self._request("POST", OAuth1UploadClient.upload_url, data=data)
-
-    def __simple_upload(
-        self,
-        media_bytes: bytes,
-        media_category: Optional[
-            Literal[
-                "amplify_video",
-                "tweet_gif",
-                "tweet_image",
-                "tweet_video",
-            ]
-        ] = None,
-        additional_owners: Optional[List[str]] = None,
-    ):
-        fields = {"media": media_bytes}
-        if media_category is not None:
-            fields |= {"media_category": media_category}
-
-        if additional_owners is not None:
-            fields |= {"additional_owners": additional_owners}
-
-        mp_data = MultipartEncoder(fields=fields)
-
-        return self._request("POST", OAuth1UploadClient.upload_url, data=mp_data,
-                             headers={"Content-Type": mp_data.content_type})
-
-    def get_media_status(self, media_id: str):
-        return self._request("GET", OAuth1UploadClient.upload_url,
-                             params={"command": "STATUS", "media_id": media_id})
+        return self._post(f"{self.api_base_url}/1.1/oauth/invalidate_token.json")
 
     def upload_media(
         self,
@@ -359,20 +485,18 @@ class OAuth1UploadClient(OAuth1Client):
             return self.__chunked_upload_finalize(media_id)
 
 
-class OAuth2Client:
-    api_url = "https://api.twitter.com"
-
+class OAuth2Client(AbstractClient):
     def __init__(self, client_id: str, access_token: Optional[str] = None,
                  token_type: str = "bearer", expires_at: Optional[datetime] = None,
-                 refresh_token: Optional[str] = None, client_secret: Optional[str] = None):
+                 refresh_token: Optional[str] = None, client_secret: Optional[str] = None,
+                 session: Optional[Session] = None):
+        super().__init__(session=session)
         self.__client_id = client_id
         self.__access_token = access_token
         self.__token_type = token_type
         self.__expires_at = expires_at
         self.__refresh_token = refresh_token
         self.__client_secret = client_secret
-        self.__session = Session()
-        self.__session.headers["User-Agent"] = f"pyeXTC/{__version__}"
 
     @classmethod
     def new_user_authorization(cls, client_id: str, redirect_uri: str, scopes: List[OAuth2Scope],
@@ -433,8 +557,8 @@ class OAuth2Client:
             headers = None
             token_data.update(client_id=client_id)
 
-        res = self.__session.post(
-            f"{OAuth2Client.api_url}/2/oauth2/token",
+        res = self._session.post(
+            f"{self.api_base_url}/2/oauth2/token",
             headers=headers,
             data=token_data,
         )
@@ -450,71 +574,6 @@ class OAuth2Client:
         if "refresh_token" in token_data:
             refresh_token: str = token_data["refresh_token"]
             self.__refresh_token = refresh_token
-
-    def __clean_api_url(self, uri: str):
-        while uri[:1] == "/":
-            uri = uri[1:]
-
-        return f"{self.api_url}/{uri}"
-
-    def __request(self, method: str, uri: str, **kwargs):
-        if "headers" in kwargs:
-            if "Authorization" not in kwargs["headers"]:
-                if (
-                    self.__expires_at and
-                    self.__refresh_token and
-                    datetime.utcnow() >= self.__expires_at
-                ):
-                    self.__refresh()
-
-                elif self.__refresh_token and self.__access_token is None:
-                    self.__refresh()
-
-                kwargs["headers"]["Authorization"] = " ".join((
-                    self.__token_type,
-                    self.__access_token,
-                ))
-
-        else:
-            if (
-                self.__expires_at and
-                self.__refresh_token and
-                datetime.utcnow() >= self.__expires_at
-            ):
-                self.__refresh()
-
-            elif self.__refresh_token and self.__access_token is None:
-                self.__refresh()
-
-            kwargs.update(
-                headers={
-                    "Authorization": " ".join((
-                        self.__token_type,
-                        self.__access_token,
-                    )),
-                },
-            )
-
-        return self.__session.request(
-            method,
-            self.__clean_api_url(uri),
-            **kwargs,
-        )
-
-    def delete(self, uri: str, **kwargs):
-        return self.__request("DELETE", uri, **kwargs)
-
-    def get(self, uri: str, **kwargs):
-        return self.__request("GET", uri, **kwargs)
-
-    def patch(self, uri: str, **kwargs):
-        return self.__request("PATCH", uri, **kwargs)
-
-    def post(self, uri: str, **kwargs):
-        return self.__request("POST", uri, **kwargs)
-
-    def put(self, uri: str, **kwargs):
-        return self.__request("PUT", uri, **kwargs)
 
     def __refresh(self):
         assert self.__refresh_token
@@ -536,8 +595,8 @@ class OAuth2Client:
             headers = None
             token_data.update(client_id=self.__client_id)
 
-        res = self.__session.post(
-            f"{OAuth2Client.api_url}/2/oauth2/token",
+        res = self._session.post(
+            f"{self.api_base_url}/2/oauth2/token",
             headers=headers,
             data=token_data,
         )
@@ -549,6 +608,28 @@ class OAuth2Client:
         self.__expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
         token_type: str = token_data["token_type"]
         self.__token_type = token_type
+
+    def _request(self, method: str, url: str, params: Optional[Dict[str, str]] = None,
+                 headers: Optional[Dict[str, str]] = None, data: Optional[Any] = None,
+                 json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
+        if (
+            self.__expires_at and self.__refresh_token and datetime.utcnow() >= self.__expires_at
+        ) or (
+            self.__refresh_token and self.__access_token is None
+        ):
+            self.__refresh()
+
+        authorization = " ".join((self.__token_type, self.__access_token))
+
+        if headers is not None:
+            if "Authorization" not in headers:
+                headers["Authorization"] = authorization
+
+        else:
+            headers = {"Authorization": authorization}
+
+        return super()._request(method, url, params=params, data=data, headers=headers, json=json,
+                                files=files)
 
     def revoke(self):
         token_data = {
@@ -571,8 +652,8 @@ class OAuth2Client:
             headers = None
             token_data.update(client_id=self.__client_id)
 
-        res = self.__session.post(
-            f"{OAuth2Client.api_url}/2/oauth2/revoke",
+        res = self._session.post(
+            f"{self.api_base_url}/2/oauth2/revoke",
             headers=headers,
             data=token_data,
         )
@@ -603,8 +684,8 @@ class OAuth2Client:
                 headers = None
                 token_data.update(client_id=self.__client_id)
 
-            res = self.__session.post(
-                f"{OAuth2Client.api_url}/2/oauth2/revoke",
+            res = self._session.post(
+                f"{self.api_base_url}/2/oauth2/revoke",
                 headers=headers,
                 data=token_data,
             )
@@ -612,5 +693,4 @@ class OAuth2Client:
             assert res.json()["revoked"] is True
             self.__refresh_token = None
 
-    def create_new_tweet(self, text: str):
-        return self.post("2/tweets", json={"text": text})
+        return res
