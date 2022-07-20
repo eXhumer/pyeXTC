@@ -23,6 +23,67 @@ from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 
+class OAuth1ExchangeWSGIApp:
+    def __init__(self, oauth_token: str, redirect_uri: str):
+        self.__oauth_token = oauth_token
+        self.__oauth_verifier: Optional[str] = None
+        self.__redirect_uri = redirect_uri
+        self.__authorize_endpoint = "/authorize"
+        self.__callback_endpoint = urlparse(self.__redirect_uri).path
+
+    def __call__(self, environ: Dict[str, str],
+                 start_resp: Callable[[str, List[Tuple[str, str]]], None]):
+        method = environ["REQUEST_METHOD"]
+        query_string = environ["QUERY_STRING"]
+        query = parse_qs(query_string)
+        uri = environ["PATH_INFO"]
+
+        if method != "GET":
+            start_resp("405 Method Not Allowed", [])
+            return [b"Authorization exchange server only supports HTTP GET requests!"]
+
+        if uri not in (self.__authorize_endpoint, self.__callback_endpoint):
+            start_resp("404 Not Found", [])
+            return [b"Unknown URI!"]
+
+        if uri == self.__authorize_endpoint:
+            start_resp("302 Moved Temporarily", [("Location", self.authorization_url)])
+            return [b""]
+
+        if not ("oauth_token" in query and "oauth_verifier" in query):
+            start_resp("200 OK", [])
+            return [
+                b"Unsuccessful callback! \"oauth_token\" and \"state\" query ",
+                b"parameters expected in successful callback\n\n",
+                b"Received Callback: " + query_string.encode("ascii"),
+            ]
+
+        if query["oauth_token"][0] != self.__oauth_token:
+            start_resp("200 OK", [])
+            return [
+                "\n".join([
+                    "OAuth Token Mismatch!",
+                    f"Expected: {self.__oauth_token}",
+                    f"Received: {query['oauth_token'][0]}"
+                ]).encode("ascii")
+            ]
+
+        self.__oauth_verifier = query["oauth_verifier"][0]
+        start_resp("200 OK", [])
+        return [b"Received OAuth verifier! You can close this page!"]
+
+    @property
+    def authorization_url(self):
+        return "?".join((
+            "https://api.twitter.com/oauth/authorize",
+            urlencode({"oauth_token": self.__oauth_token}),
+        ))
+
+    @property
+    def oauth_verifier(self):
+        return self.__oauth_verifier
+
+
 class OAuth2Scope(str, Enum):
     TWEET_READ = "tweet.read"
     TWEET_WRITE = "tweet.write"
