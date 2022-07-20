@@ -317,6 +317,10 @@ class OAuth1UploadClient(OAuth1Client):
         return self._request("POST", OAuth1UploadClient.upload_url, data=mp_data,
                              headers={"Content-Type": mp_data.content_type})
 
+    def get_media_status(self, media_id: str):
+        return self._request("GET", OAuth1UploadClient.upload_url,
+                             params={"command": "STATUS", "media_id": media_id})
+
     def upload_media(
         self,
         media_filename: str,
