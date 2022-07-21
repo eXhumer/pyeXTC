@@ -84,7 +84,7 @@ class OAuth1ExchangeWSGIApp:
         return self.__oauth_verifier
 
 
-class OAuth2Scope(str, Enum):
+class OAuth2TwitterScope(str, Enum):
     TWEET_READ = "tweet.read"
     TWEET_WRITE = "tweet.write"
     TWEET_MODERATE_WRITE = "tweet.moderate.write"
@@ -106,7 +106,7 @@ class OAuth2Scope(str, Enum):
 
 
 class OAuth2PKCECodeExchangeWSGIApp:
-    def __init__(self, client_id: str, redirect_uri: str, scopes: List[OAuth2Scope],
+    def __init__(self, client_id: str, redirect_uri: str, scopes: List[OAuth2TwitterScope],
                  state: Optional[str] = None):
         if state is None:
             state = "".join((choice(ascii_letters + digits) for _ in range(randrange(20, 500))))

@@ -14,5 +14,5 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from ._auth import OAuth2Scope  # noqa: F401
-from ._client import OAuth1Client, OAuth2Client  # noqa: F401
+from ._auth import OAuth2TwitterScope  # noqa: F401
+from ._client import OAuth1TwitterClient, OAuth2TwitterClient  # noqa: F401

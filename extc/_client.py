@@ -33,7 +33,7 @@ from wsgiref.simple_server import make_server
 from requests import Response, Session
 from requests_toolbelt import MultipartEncoder
 
-from ._auth import OAuth1ExchangeWSGIApp, OAuth2PKCECodeExchangeWSGIApp, OAuth2Scope
+from ._auth import OAuth1ExchangeWSGIApp, OAuth2PKCECodeExchangeWSGIApp, OAuth2TwitterScope
 from ._utils import NoLoggingWSGIRequestHandler
 
 
@@ -44,7 +44,7 @@ def _percent_encode(src: str):
     return quote(src, safe="")
 
 
-class AbstractClient(ABC):
+class AbstractTwitterClient(ABC):
     api_base_url = "https://api.twitter.com"
 
     def __init__(self, session: Optional[Session] = None):
@@ -171,7 +171,7 @@ class AbstractClient(ABC):
         pass
 
 
-class OAuth1Client(AbstractClient):
+class OAuth1TwitterClient(AbstractTwitterClient):
     upload_url = "https://upload.twitter.com/1.1/media/upload.json"
 
     @staticmethod
@@ -182,7 +182,7 @@ class OAuth1Client(AbstractClient):
                             params: Optional[Dict[str, str]] = None,
                             json: Optional[Dict[str, str]] = None,
                             data: Optional[Dict[str, str]] = None):
-        oauth_signature, oauth_nonce = OAuth1Client.__request_signature_hmac_sha1(
+        oauth_signature, oauth_nonce = OAuth1TwitterClient.__request_signature_hmac_sha1(
             method, url, oauth_consumer_key, oauth_consumer_secret, oauth_timestamp,
             oauth_nonce=oauth_nonce, oauth_token=oauth_token,
             oauth_token_secret=oauth_token_secret, params=params, json=json, data=data)
@@ -293,16 +293,6 @@ class OAuth1Client(AbstractClient):
         oauth_token = oauth_token_data["oauth_token"][0]
         oauth_token_secret = oauth_token_data["oauth_token_secret"][0]
 
-        print(
-            "\n".join((
-                "New OAuth1 token",
-                f"oauth_consumer_key={oauth_consumer_key}",
-                f"oauth_consumer_secret={oauth_consumer_secret}",
-                f"oauth_token={oauth_token}",
-                f"oauth_token_secret={oauth_token_secret}",
-            ))
-        )
-
         return cls(oauth_consumer_key, oauth_consumer_secret, oauth_token, oauth_token_secret)
 
     def __chunked_upload_append(self, media_id: str, media_filename: str, media_bytes: bytes,
@@ -380,7 +370,7 @@ class OAuth1Client(AbstractClient):
                  json: Optional[Dict[str, str]] = None, files: Optional[Dict[str, Any]] = None):
         if headers is not None and isinstance(headers, dict):
             if "Authorization" not in headers:
-                authorization = OAuth1Client.__authorize_request(
+                authorization = OAuth1TwitterClient.__authorize_request(
                     method, url, self.__oauth_consumer_key, self.__oauth_consumer_secret,
                     datetime.utcnow(), oauth_token=self.__oauth_token,
                     oauth_token_secret=self.__oauth_token_secret, params=params, json=json,
@@ -389,7 +379,7 @@ class OAuth1Client(AbstractClient):
                 headers |= {"Authorization": authorization}
 
         else:
-            authorization = OAuth1Client.__authorize_request(
+            authorization = OAuth1TwitterClient.__authorize_request(
                 method, url, self.__oauth_consumer_key, self.__oauth_consumer_secret,
                 datetime.utcnow(), oauth_token=self.__oauth_token,
                 oauth_token_secret=self.__oauth_token_secret, params=params, json=json,
@@ -414,9 +404,10 @@ class OAuth1Client(AbstractClient):
         params = {"oauth_callback": oauth_callback, "x_auth_access_type": x_auth_access_type}
         timestamp = datetime.utcnow()
         request_token_url = f"{cls.api_base_url}/oauth/request_token"
-        authorization = OAuth1Client.__authorize_request("POST", request_token_url,
-                                                         oauth_consumer_key, oauth_consumer_secret,
-                                                         timestamp, params=params)
+        authorization = OAuth1TwitterClient.__authorize_request("POST", request_token_url,
+                                                                oauth_consumer_key,
+                                                                oauth_consumer_secret, timestamp,
+                                                                params=params)
 
         res = session.post(request_token_url, params=params,
                            headers={"Authorization": authorization})
@@ -441,8 +432,20 @@ class OAuth1Client(AbstractClient):
             while wsgi_app.oauth_verifier is None:
                 srv.handle_request()
 
-        return cls.__exchange_verifier(oauth_consumer_key, oauth_consumer_secret, oauth_token,
-                                       wsgi_app.oauth_verifier, session=session)
+        ctx = cls.__exchange_verifier(oauth_consumer_key, oauth_consumer_secret, oauth_token,
+                                      wsgi_app.oauth_verifier, session=session)
+
+        print(
+            "\n".join((
+                "New OAuth1 token",
+                f"oauth_consumer_key={oauth_consumer_key}",
+                f"oauth_consumer_secret={oauth_consumer_secret}",
+                f"oauth_token={ctx.__oauth_token}",
+                f"oauth_token_secret={ctx.__oauth_token_secret}",
+            ))
+        )
+
+        return ctx
 
     def revoke(self):
         return self._post(f"{self.api_base_url}/1.1/oauth/invalidate_token.json")
@@ -485,7 +488,7 @@ class OAuth1Client(AbstractClient):
             return self.__chunked_upload_finalize(media_id)
 
 
-class OAuth2Client(AbstractClient):
+class OAuth2TwitterClient(AbstractTwitterClient):
     def __init__(self, client_id: str, access_token: Optional[str] = None,
                  token_type: str = "bearer", expires_at: Optional[datetime] = None,
                  refresh_token: Optional[str] = None, client_secret: Optional[str] = None,
@@ -499,9 +502,11 @@ class OAuth2Client(AbstractClient):
         self.__client_secret = client_secret
 
     @classmethod
-    def new_user_authorization(cls, client_id: str, redirect_uri: str, scopes: List[OAuth2Scope],
-                               state: Optional[str] = None, client_secret: Optional[str] = None):
-        ctx = cls(client_id, client_secret=client_secret)
+    def new_user_authorization(cls, client_id: str, redirect_uri: str,
+                               scopes: List[OAuth2TwitterScope], state: Optional[str] = None,
+                               client_secret: Optional[str] = None,
+                               session: Optional[Session] = None):
+        ctx = cls(client_id, client_secret=client_secret, session=session)
 
         url_parts = urlparse(redirect_uri)
         assert url_parts.scheme.lower() == "http"
@@ -522,6 +527,16 @@ class OAuth2Client(AbstractClient):
         ctx.__exchange_authorization_code(client_id, wsgi_app.authorization_code,
                                           wsgi_app.code_verifier, redirect_uri,
                                           client_secret=client_secret)
+
+        print(
+            "\n".join((
+                "New OAuth2 token",
+                f"token_type={ctx.__token_type}",
+                f"access_token={ctx.__access_token}",
+                f"refresh_token={ctx.__refresh_token}",
+                f"expires_at={ctx.__expires_at}",
+            ))
+        )
 
         return ctx
 
